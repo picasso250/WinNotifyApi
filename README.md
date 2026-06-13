@@ -14,6 +14,8 @@ The service listens on:
 http://127.0.0.1:8787
 ```
 
+Start the executable normally. Do not launch it with `Start-Process -WindowStyle Hidden`, because Windows can also hide notification windows created by the process.
+
 ## Notify
 
 ```powershell

@@ -7,6 +7,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls("http://127.0.0.1:8787");
 
 builder.Services.AddSingleton<NotificationQueue>();
+builder.Services.AddHostedService<StartupSplashWorker>();
 builder.Services.AddHostedService<NotificationUiWorker>();
 
 var app = builder.Build();
@@ -89,6 +90,104 @@ public sealed class NotificationUiWorker(NotificationQueue queue, ILogger<Notifi
         {
             logger.LogError(ex, "Failed to show notification window");
         }
+    }
+}
+
+public sealed class StartupSplashWorker(ILogger<StartupSplashWorker> logger) : BackgroundService
+{
+    protected override Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var thread = new Thread(() => ShowSplash(logger))
+        {
+            IsBackground = true,
+            Name = "WinNotifyApi startup UI"
+        };
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+
+        return Task.CompletedTask;
+    }
+
+    private static void ShowSplash(ILogger logger)
+    {
+        try
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new StartupSplashForm());
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Failed to show startup splash window");
+        }
+    }
+}
+
+public sealed class StartupSplashForm : Form
+{
+    private readonly System.Windows.Forms.Timer closeTimer = new();
+
+    public StartupSplashForm()
+    {
+        Text = "WinNotifyApi";
+        Width = 300;
+        Height = 86;
+        StartPosition = FormStartPosition.Manual;
+        FormBorderStyle = FormBorderStyle.FixedSingle;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ShowIcon = false;
+        ShowInTaskbar = false;
+        TopMost = true;
+        BackColor = Color.FromArgb(248, 250, 252);
+        Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+
+        Controls.Add(new Label
+        {
+            AutoSize = false,
+            Text = "WinNotifyApi running",
+            Font = new Font(Font, FontStyle.Bold),
+            ForeColor = Color.FromArgb(15, 23, 42),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Dock = DockStyle.Fill
+        });
+
+        closeTimer.Interval = 1200;
+        closeTimer.Tick += (_, _) => Close();
+        closeTimer.Start();
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+
+        var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
+        Location = new Point(
+            workingArea.Right - Width - 20,
+            workingArea.Bottom - Height - 20);
+
+        Activate();
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+
+        WindowState = FormWindowState.Normal;
+        NativeMethods.ShowWindow(Handle, ShowWindowCommand.Show);
+        BringToFront();
+        Activate();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            closeTimer.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 }
 
@@ -176,7 +275,7 @@ public sealed class NotificationForm : Form
         base.OnShown(e);
 
         WindowState = FormWindowState.Normal;
-        ShowWindow(Handle, ShowWindowCommand.Show);
+        NativeMethods.ShowWindow(Handle, ShowWindowCommand.Show);
         BringToFront();
         Activate();
     }
@@ -198,11 +297,15 @@ public sealed class NotificationForm : Form
         return Math.Max(preferred.Height + 8, 38);
     }
 
-    [DllImport("user32.dll")]
-    private static extern bool ShowWindow(IntPtr hWnd, ShowWindowCommand nCmdShow);
+}
 
-    private enum ShowWindowCommand
-    {
-        Show = 5
-    }
+public enum ShowWindowCommand
+{
+    Show = 5
+}
+
+public static partial class NativeMethods
+{
+    [DllImport("user32.dll")]
+    public static extern bool ShowWindow(IntPtr hWnd, ShowWindowCommand nCmdShow);
 }
