@@ -7,8 +7,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.WebHost.UseUrls("http://127.0.0.1:8787");
 
 builder.Services.AddSingleton<NotificationQueue>();
-builder.Services.AddHostedService<StartupSplashWorker>();
-builder.Services.AddHostedService<NotificationUiWorker>();
+builder.Services.AddHostedService(services =>
+    services.GetRequiredService<NotificationQueue>());
 
 var app = builder.Build();
 
@@ -45,94 +45,119 @@ public sealed record NotifyRequest(string? Title, string? Message, string? Text,
 
 public sealed record NotificationPayload(string Title, string Message, int DurationMs);
 
-public sealed class NotificationQueue
+public sealed class NotificationQueue : BackgroundService
 {
     private readonly Channel<NotificationPayload> channel = Channel.CreateUnbounded<NotificationPayload>();
+    private readonly ILogger<NotificationQueue> logger;
+    private readonly TaskCompletionSource<NotificationApplicationContext> uiReady = new();
+
+    public NotificationQueue(ILogger<NotificationQueue> logger)
+    {
+        this.logger = logger;
+    }
 
     public ValueTask EnqueueAsync(NotificationPayload payload)
     {
         return channel.Writer.WriteAsync(payload);
     }
 
-    public IAsyncEnumerable<NotificationPayload> ReadAllAsync(CancellationToken cancellationToken)
-    {
-        return channel.Reader.ReadAllAsync(cancellationToken);
-    }
-}
-
-public sealed class NotificationUiWorker(NotificationQueue queue, ILogger<NotificationUiWorker> logger)
-    : BackgroundService
-{
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await foreach (var payload in queue.ReadAllAsync(stoppingToken))
+        var uiThread = new Thread(RunUiThread)
         {
-            var thread = new Thread(() => ShowNotification(payload, logger))
-            {
-                IsBackground = true,
-                Name = "WinNotifyApi UI"
-            };
-
-            thread.SetApartmentState(ApartmentState.STA);
-            thread.Start();
-        }
-    }
-
-    private static void ShowNotification(NotificationPayload payload, ILogger logger)
-    {
-        try
-        {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new NotificationForm(payload));
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Failed to show notification window");
-        }
-    }
-}
-
-public sealed class StartupSplashWorker(ILogger<StartupSplashWorker> logger) : BackgroundService
-{
-    protected override Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        var thread = new Thread(() => ShowSplash(logger))
-        {
-            IsBackground = true,
-            Name = "WinNotifyApi startup UI"
+            IsBackground = false,
+            Name = "WinNotifyApi UI"
         };
 
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
+        uiThread.SetApartmentState(ApartmentState.STA);
+        uiThread.Start();
 
-        return Task.CompletedTask;
+        await using var stopRegistration = stoppingToken.Register(() =>
+        {
+            if (uiReady.Task.IsCompletedSuccessfully)
+            {
+                uiReady.Task.Result.ExitThread();
+            }
+        });
+
+        var uiContext = await uiReady.Task.WaitAsync(stoppingToken);
+        await foreach (var payload in channel.Reader.ReadAllAsync(stoppingToken))
+        {
+            uiContext.ShowNotification(payload);
+        }
     }
 
-    private static void ShowSplash(ILogger logger)
+    private void RunUiThread()
     {
         try
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new StartupSplashForm());
+
+            var uiContext = new NotificationApplicationContext();
+            uiReady.SetResult(uiContext);
+            Application.Run(uiContext);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Failed to show startup splash window");
+            uiReady.TrySetException(ex);
+            logger.LogError(ex, "WinNotifyApi UI thread failed");
         }
     }
 }
 
-public sealed class StartupSplashForm : Form
+public sealed class NotificationApplicationContext : ApplicationContext
+{
+    private readonly Form invoker = new()
+    {
+        ShowInTaskbar = false,
+        Opacity = 0,
+        FormBorderStyle = FormBorderStyle.None,
+        StartPosition = FormStartPosition.Manual,
+        Location = new Point(-32000, -32000),
+        Size = new Size(1, 1)
+    };
+
+    public NotificationApplicationContext()
+    {
+        invoker.Load += (_, _) => invoker.Hide();
+        invoker.Show();
+        new StartupSplashForm().Show();
+    }
+
+    public void ShowNotification(NotificationPayload payload)
+    {
+        invoker.BeginInvoke(() => new NotificationForm(payload).Show());
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            invoker.Dispose();
+        }
+
+        base.Dispose(disposing);
+    }
+}
+
+public sealed class StartupSplashForm : TimedPopupForm
+{
+    public StartupSplashForm()
+        : base("WinNotifyApi", "WinNotifyApi running", 300, 86, 1200)
+    {
+    }
+}
+
+public abstract class TimedPopupForm : Form
 {
     private readonly System.Windows.Forms.Timer closeTimer = new();
 
-    public StartupSplashForm()
+    protected TimedPopupForm(string title, string body, int width, int height, int durationMs)
     {
-        Text = "WinNotifyApi";
-        Width = 300;
-        Height = 86;
+        Text = title;
+        Width = width;
+        Height = height;
         StartPosition = FormStartPosition.Manual;
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
@@ -146,14 +171,14 @@ public sealed class StartupSplashForm : Form
         Controls.Add(new Label
         {
             AutoSize = false,
-            Text = "WinNotifyApi running",
+            Text = body,
             Font = new Font(Font, FontStyle.Bold),
             ForeColor = Color.FromArgb(15, 23, 42),
             TextAlign = ContentAlignment.MiddleCenter,
             Dock = DockStyle.Fill
         });
 
-        closeTimer.Interval = 1200;
+        closeTimer.Interval = durationMs;
         closeTimer.Tick += (_, _) => Close();
         closeTimer.Start();
     }
@@ -176,6 +201,14 @@ public sealed class StartupSplashForm : Form
 
         WindowState = FormWindowState.Normal;
         NativeMethods.ShowWindow(Handle, ShowWindowCommand.Show);
+        NativeMethods.SetWindowPos(
+            Handle,
+            NativeMethods.TopMost,
+            Left,
+            Top,
+            Width,
+            Height,
+            SetWindowPosFlags.ShowWindow);
         BringToFront();
         Activate();
     }
@@ -191,56 +224,23 @@ public sealed class StartupSplashForm : Form
     }
 }
 
-public sealed class NotificationForm : Form
+public sealed class NotificationForm : TimedPopupForm
 {
     private const int FormWidth = 380;
-    private const int FormMinHeight = 130;
+    private const int FormMinHeight = 104;
     private const int MarginSize = 18;
 
-    private readonly System.Windows.Forms.Timer closeTimer = new();
-
     public NotificationForm(NotificationPayload payload)
+        : base(payload.Title, string.Empty, FormWidth, FormMinHeight, payload.DurationMs)
     {
-        Text = payload.Title;
-        Width = FormWidth;
-        MinimumSize = new Size(FormWidth, FormMinHeight);
-        StartPosition = FormStartPosition.Manual;
-        FormBorderStyle = FormBorderStyle.FixedSingle;
-        MaximizeBox = false;
-        MinimizeBox = false;
-        ShowIcon = false;
-        ShowInTaskbar = false;
-        TopMost = true;
-        BackColor = Color.FromArgb(248, 250, 252);
-        Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
-
-        var titleLabel = new Label
-        {
-            AutoSize = false,
-            Text = payload.Title,
-            Font = new Font(Font, FontStyle.Bold),
-            ForeColor = Color.FromArgb(15, 23, 42),
-            Location = new Point(MarginSize, MarginSize),
-            Size = new Size(FormWidth - 72, 24)
-        };
-
-        var closeButton = new Button
-        {
-            Text = "x",
-            FlatStyle = FlatStyle.Flat,
-            Size = new Size(28, 28),
-            Location = new Point(FormWidth - 46, 12),
-            TabStop = false
-        };
-        closeButton.FlatAppearance.BorderSize = 0;
-        closeButton.Click += (_, _) => Close();
+        Controls.Clear();
 
         var messageLabel = new Label
         {
             AutoSize = false,
             Text = payload.Message,
             ForeColor = Color.FromArgb(30, 41, 59),
-            Location = new Point(MarginSize, 50),
+            Location = new Point(MarginSize, MarginSize),
             MaximumSize = new Size(FormWidth - MarginSize * 2, 0),
             Size = new Size(FormWidth - MarginSize * 2, 1)
         };
@@ -249,45 +249,7 @@ public sealed class NotificationForm : Form
         var contentHeight = Math.Max(FormMinHeight, messageLabel.Bottom + MarginSize + 8);
         Height = contentHeight;
 
-        Controls.Add(titleLabel);
-        Controls.Add(closeButton);
         Controls.Add(messageLabel);
-
-        closeTimer.Interval = payload.DurationMs;
-        closeTimer.Tick += (_, _) => Close();
-        closeTimer.Start();
-    }
-
-    protected override void OnLoad(EventArgs e)
-    {
-        base.OnLoad(e);
-
-        var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 720);
-        Location = new Point(
-            workingArea.Right - Width - 20,
-            workingArea.Bottom - Height - 20);
-
-        Activate();
-    }
-
-    protected override void OnShown(EventArgs e)
-    {
-        base.OnShown(e);
-
-        WindowState = FormWindowState.Normal;
-        NativeMethods.ShowWindow(Handle, ShowWindowCommand.Show);
-        BringToFront();
-        Activate();
-    }
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing)
-        {
-            closeTimer.Dispose();
-        }
-
-        base.Dispose(disposing);
     }
 
     private static int GetPreferredLabelHeight(Label label, string text)
@@ -304,8 +266,26 @@ public enum ShowWindowCommand
     Show = 5
 }
 
+[Flags]
+public enum SetWindowPosFlags
+{
+    ShowWindow = 0x0040
+}
+
 public static partial class NativeMethods
 {
+    public static readonly IntPtr TopMost = new(-1);
+
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, ShowWindowCommand nCmdShow);
+
+    [DllImport("user32.dll")]
+    public static extern bool SetWindowPos(
+        IntPtr hWnd,
+        IntPtr hWndInsertAfter,
+        int x,
+        int y,
+        int cx,
+        int cy,
+        SetWindowPosFlags uFlags);
 }
