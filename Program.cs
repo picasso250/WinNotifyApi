@@ -229,6 +229,8 @@ public sealed class NotificationForm : TimedPopupForm
     private const int FormWidth = 380;
     private const int FormMinHeight = 104;
     private const int MarginSize = 18;
+    private const int BottomPadding = 24;
+    private const int MaxMessageLines = 10;
 
     public NotificationForm(NotificationPayload payload)
         : base(payload.Title, string.Empty, FormWidth, FormMinHeight, payload.DurationMs)
@@ -242,21 +244,24 @@ public sealed class NotificationForm : TimedPopupForm
             ForeColor = Color.FromArgb(30, 41, 59),
             Location = new Point(MarginSize, MarginSize),
             MaximumSize = new Size(FormWidth - MarginSize * 2, 0),
-            Size = new Size(FormWidth - MarginSize * 2, 1)
+            Size = new Size(FormWidth - MarginSize * 2, 1),
+            AutoEllipsis = true
         };
-        messageLabel.Height = GetPreferredLabelHeight(messageLabel, payload.Message);
+        messageLabel.Height = GetPreferredLabelHeight(messageLabel, payload.Message, MaxMessageLines);
 
-        var contentHeight = Math.Max(FormMinHeight, messageLabel.Bottom + MarginSize + 8);
-        Height = contentHeight;
+        var contentHeight = Math.Max(FormMinHeight, messageLabel.Bottom + BottomPadding);
+        ClientSize = new Size(FormWidth, contentHeight);
 
         Controls.Add(messageLabel);
     }
 
-    private static int GetPreferredLabelHeight(Label label, string text)
+    private static int GetPreferredLabelHeight(Label label, string text, int maxLines)
     {
         var proposedSize = new Size(label.Width, int.MaxValue);
         var preferred = TextRenderer.MeasureText(text, label.Font, proposedSize, TextFormatFlags.WordBreak);
-        return Math.Max(preferred.Height + 8, 38);
+        var lineHeight = TextRenderer.MeasureText("Ag", label.Font).Height;
+        var maxHeight = lineHeight * maxLines + 8;
+        return Math.Max(Math.Min(preferred.Height + 8, maxHeight), 38);
     }
 
 }
