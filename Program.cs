@@ -1,4 +1,5 @@
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using System.Windows.Forms;
 
@@ -170,6 +171,16 @@ public sealed class NotificationForm : Form
         Activate();
     }
 
+    protected override void OnShown(EventArgs e)
+    {
+        base.OnShown(e);
+
+        WindowState = FormWindowState.Normal;
+        ShowWindow(Handle, ShowWindowCommand.Show);
+        BringToFront();
+        Activate();
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
@@ -185,5 +196,13 @@ public sealed class NotificationForm : Form
         var proposedSize = new Size(label.Width, int.MaxValue);
         var preferred = TextRenderer.MeasureText(text, label.Font, proposedSize, TextFormatFlags.WordBreak);
         return Math.Max(preferred.Height + 8, 38);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, ShowWindowCommand nCmdShow);
+
+    private enum ShowWindowCommand
+    {
+        Show = 5
     }
 }
