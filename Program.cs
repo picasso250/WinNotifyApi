@@ -4,7 +4,19 @@ using System.Threading.Channels;
 using System.Windows.Forms;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.UseUrls("http://127.0.0.1:8787");
+
+int port;
+try
+{
+    port = ResolvePort(builder.Configuration, args);
+}
+catch (InvalidOperationException ex)
+{
+    Console.Error.WriteLine(ex.Message);
+    return 1;
+}
+
+builder.WebHost.UseUrls($"http://127.0.0.1:{port}");
 
 builder.Services.AddSingleton<NotificationQueue>();
 builder.Services.AddHostedService(services =>
@@ -40,6 +52,68 @@ app.MapPost("/notify", async (NotifyRequest request, NotificationQueue queue) =>
 });
 
 app.Run();
+return 0;
+
+static int ResolvePort(IConfiguration configuration, string[] args)
+{
+    const int defaultPort = 25378;
+    var configuredPort = configuration["WinNotifyApi:Port"];
+    var environmentPort = Environment.GetEnvironmentVariable("WINNOTIFYAPI_PORT");
+    var commandLinePort = GetCommandLinePort(args);
+    var portSource = "default";
+    var portValue = defaultPort.ToString();
+
+    if (!string.IsNullOrWhiteSpace(configuredPort))
+    {
+        portSource = "WinNotifyApi:Port";
+        portValue = configuredPort;
+    }
+
+    if (!string.IsNullOrWhiteSpace(environmentPort))
+    {
+        portSource = "WINNOTIFYAPI_PORT";
+        portValue = environmentPort;
+    }
+
+    if (!string.IsNullOrWhiteSpace(commandLinePort))
+    {
+        portSource = "--port";
+        portValue = commandLinePort;
+    }
+
+    if (!int.TryParse(portValue, out var port) || port < 1024 || port > 65535)
+    {
+        throw new InvalidOperationException(
+            $"Invalid WinNotifyApi port from {portSource}: '{portValue}'. Use a TCP port from 1024 to 65535.");
+    }
+
+    return port;
+}
+
+static string? GetCommandLinePort(string[] args)
+{
+    for (var index = 0; index < args.Length; index++)
+    {
+        var arg = args[index];
+
+        if (arg == "--port")
+        {
+            if (index + 1 >= args.Length || string.IsNullOrWhiteSpace(args[index + 1]))
+            {
+                throw new InvalidOperationException("Invalid WinNotifyApi port from --port: missing value.");
+            }
+
+            return args[index + 1];
+        }
+
+        if (arg.StartsWith("--port=", StringComparison.Ordinal))
+        {
+            return arg["--port=".Length..];
+        }
+    }
+
+    return null;
+}
 
 public sealed record NotifyRequest(string? Title, string? Message, string? Text, int? DurationMs);
 

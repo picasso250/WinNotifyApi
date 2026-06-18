@@ -11,7 +11,21 @@ dotnet run
 The service listens on:
 
 ```text
-http://127.0.0.1:8787
+http://127.0.0.1:25378
+```
+
+The default port is configured in `appsettings.json` as `WinNotifyApi:Port`.
+You can override it without rebuilding:
+
+```powershell
+dotnet run -- --port 25379
+```
+
+or:
+
+```powershell
+$env:WINNOTIFYAPI_PORT = '25380'
+dotnet run
 ```
 
 Start the executable normally. Do not launch it with `Start-Process -WindowStyle Hidden`, because Windows can also hide notification windows created by the process.
@@ -21,7 +35,7 @@ Start the executable normally. Do not launch it with `Start-Process -WindowStyle
 ```powershell
 Invoke-RestMethod `
   -Method Post `
-  -Uri http://127.0.0.1:8787/notify `
+  -Uri http://127.0.0.1:25378/notify `
   -ContentType 'application/json' `
   -Body '{"title":"提醒","message":"这是一条来自 API 的提示","durationMs":5000}'
 ```
